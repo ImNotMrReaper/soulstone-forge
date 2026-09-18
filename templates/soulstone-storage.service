@@ -1,0 +1,14 @@
+[Unit]
+Description=Soul Stone Seamless Storage & Directory Mount Engine
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/soulstone-storage attach
+ExecStop=/usr/local/bin/soulstone-storage detach
+TimeoutSec=120
+
+[Install]
+WantedBy=multi-user.target

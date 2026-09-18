@@ -1,0 +1,4 @@
+# Strictly match ONLY the Soul Stone Modular Storage SD Card (UUID d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2)
+# All other external drives, generic SD cards, and USB thumb drives use stock system icons and standard mounts.
+SUBSYSTEM=="block", ENV{ID_FS_UUID}=="d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2", ACTION=="add", ENV{ID_DRIVE_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd", ENV{UDISKS_NAME}="Soul Stone", TAG+="systemd", ENV{SYSTEMD_WANTS}="soulstone-storage.service"
+SUBSYSTEM=="block", ENV{ID_FS_UUID}=="d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2", ACTION=="remove", RUN+="/usr/local/bin/soulstone-storage detach"

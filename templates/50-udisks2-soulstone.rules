@@ -1,0 +1,10 @@
+// Polkit rule granting user 1-click unmount/eject authorization for Soul Stone
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.udisks2.filesystem-unmount-others" ||
+         action.id == "org.freedesktop.udisks2.filesystem-unmount" ||
+         action.id == "org.freedesktop.udisks2.eject-media" ||
+         action.id == "org.freedesktop.udisks2.power-off-drive") &&
+        subject.user == "mr-reaper") {
+        return polkit.Result.YES;
+    }
+});
