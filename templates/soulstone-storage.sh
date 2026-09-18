@@ -53,10 +53,10 @@ clean_stale_mounts() {
         fi
     done
 
-    # Clean ~/SD Card portal mount if stale
-    if is_mounted "$USER_HOME/SD Card"; then
-        if ! is_mount_healthy "$USER_HOME/SD Card"; then
-            umount -l "$USER_HOME/SD Card" 2>/dev/null || true
+    # Clean ~/Soul Stone portal mount if stale
+    if is_mounted "$USER_HOME/Soul Stone"; then
+        if ! is_mount_healthy "$USER_HOME/Soul Stone"; then
+            umount -l "$USER_HOME/Soul Stone" 2>/dev/null || true
         fi
     fi
 
@@ -122,42 +122,69 @@ attach() {
         elif [ ! -e "$local_path" ]; then
             mkdir -p "$local_path"
             chown "$USER_NAME:$USER_NAME" "$local_path"
+        elif [ -b "/dev/mapper/soulstone_crypt" ]; then
+            mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2 "/dev/mapper/soulstone_crypt" "$SD_MOUNT"
+        else
+            log "Device $SD_DEV not found or not unlocked. Cannot attach."
+            return 1
+        fi
+    fi
+
+    # Set root permissions
+    chown "$USER_NAME:$USER_NAME" "$SD_MOUNT"
+    chmod 755 "$SD_MOUNT"
+
+    # Set custom volume icon on root mount
+    if [ -f "$USER_HOME/.local/share/icons/sdcard.png" ]; then
+        cp -f "$USER_HOME/.local/share/icons/sdcard.png" "$SD_MOUNT/.VolumeIcon.png" 2>/dev/null || true
+        chown "$USER_NAME:$USER_NAME" "$SD_MOUNT/.VolumeIcon.png" 2>/dev/null || true
+    fi
+
+    # 1. Bind-mount standard companion folders
+    for mapping in "${MAPPINGS[@]}"; do
+        IFS="|" read -r sd_sub local_path <<< "$mapping"
+        target_dir="$SD_MOUNT/$sd_sub"
+
+        mkdir -p "$target_dir"
+        chown -R "$USER_NAME:$USER_NAME" "$target_dir"
+        mkdir -p "$local_path"
+        chown -R "$USER_NAME:$USER_NAME" "$local_path"
+
+        # Auto-sync any files created locally while offline
+        if [ -d "$local_path" ] && [ "$(ls -A "$local_path" 2>/dev/null)" ]; then
+            if ! is_mounted "$local_path"; then
+                log "Migrating offline files: $local_path -> $target_dir (Lossless)..."
+                rsync -av --remove-source-files "$local_path/" "$target_dir/" 2>/dev/null || true
+                find "$local_path" -depth -mindepth 1 -type d -empty -delete 2>/dev/null || true
+            fi
         fi
 
-        # If local path is dead or not mounted, clean and bind-mount
-        if ! is_mount_healthy "$local_path"; then
-            umount -l "$local_path" 2>/dev/null || true
-
-            if [ -d "$local_path" ] && [ "$(ls -A "$local_path" 2>/dev/null)" ]; then
-                log "Migrating offline files: $local_path -> $sd_path..."
-                rsync -av --remove-source-files "$local_path/" "$sd_path/" 2>/dev/null || true
-                find "$local_path" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-            fi
-
-            # Mount with x-gvfs-hide so it does NOT appear as an external drive in the dock!
-            mount --bind "$sd_path" "$local_path"
-            mount -o remount,bind,x-gvfs-hide "$local_path"
-            log "Bind-mounted (hidden from dock): $sd_path -> $local_path"
+        # Mount bind overlay with x-gvfs-hide
+        if ! is_mounted "$local_path"; then
+            mount --bind -o x-gvfs-hide "$target_dir" "$local_path"
+            log "Bind-mounted (hidden from dock): $target_dir -> $local_path"
         fi
     done
 
-    # 4. Single ~/SD Card folder with custom icon
-    local home_portal="$USER_HOME/SD Card"
-    rm -f "$USER_HOME/SD_Card"
+    # 4. Single ~/Soul Stone folder with custom SD card icon
+    local home_portal="$USER_HOME/Soul Stone"
     if [ -L "$home_portal" ]; then
         rm -f "$home_portal"
     fi
-    mkdir -p "$home_portal"
-    chown "$USER_NAME:$USER_NAME" "$home_portal"
-
-    if ! is_mount_healthy "$home_portal"; then
-        umount -l "$home_portal" 2>/dev/null || true
-        mount --bind "$SD_MOUNT" "$home_portal"
-        mount -o remount,bind,x-gvfs-hide "$home_portal"
+    if ! [ -d "$home_portal" ]; then
+        mkdir -p "$home_portal"
+        chown "$USER_NAME:$USER_NAME" "$home_portal"
     fi
-    su - "$USER_NAME" -c 'gio set "/home/'"$USER_NAME"'/SD Card" metadata::custom-icon "file:///home/'"$USER_NAME"'/.local/share/icons/sdcard.png" 2>/dev/null || true'
 
-    log "Soul Stone companion modular storage attached cleanly."
+    if ! is_mounted "$home_portal"; then
+        mount --bind "$SD_MOUNT" "$home_portal"
+        log "Attached single home portal: $home_portal -> $SD_MOUNT"
+    fi
+
+    # Set GNOME custom icon on ~/Soul Stone
+    su - "$USER_NAME" -c 'gio set "/home/'"$USER_NAME"'/Soul Stone" metadata::custom-icon "file:///home/'"$USER_NAME"'/.local/share/icons/sdcard.png" 2>/dev/null || true'
+
+    log "Soul Stone successfully attached and active!"
 }
 
 detach() {
@@ -168,23 +195,24 @@ detach() {
 
 status() {
     echo "=== Soul Stone Status ==="
-    if is_mount_healthy "$SD_MOUNT"; then
-        echo "Root: MOUNTED on $SD_MOUNT ($(findmnt -n -o SOURCE "$SD_MOUNT"))"
+    if is_mounted "$SD_MOUNT"; then
+        echo "Root: MOUNTED on $SD_MOUNT ($(findmnt -n -o SOURCE "$SD_MOUNT" 2>/dev/null || echo "$SD_DEV"))"
     else
-        echo "Root: UNMOUNTED / STALE"
+        echo "Root: NOT MOUNTED"
     fi
+
     echo "--- Active Directory Overlays ---"
     for mapping in "${MAPPINGS[@]}"; do
         IFS="|" read -r sd_sub local_path <<< "$mapping"
-        local sd_path="$SD_MOUNT/$sd_sub"
-        if is_mount_healthy "$local_path"; then
-            echo " [ACTIVE NATIVE] $local_path -> $sd_path"
+        if is_mounted "$local_path"; then
+            echo " [ACTIVE NATIVE] $local_path -> $SD_MOUNT/$sd_sub"
         else
             echo " [OFFLINE LOCAL]  $local_path (internal drive)"
         fi
     done
-    if is_mount_healthy "$USER_HOME/SD Card"; then
-        echo " [ACTIVE PORTAL] $USER_HOME/SD Card -> $SD_MOUNT"
+
+    if is_mount_healthy "$USER_HOME/Soul Stone"; then
+        echo " [ACTIVE PORTAL] $USER_HOME/Soul Stone -> $SD_MOUNT"
     fi
 }
 
