@@ -21,7 +21,7 @@ LUKS_UUID="8636c4f3-09c8-42ce-bf9b-fe273be32b3f"
 BTRFS_UUID="18ceeb84-5abf-4456-88a2-d2f2fb2255f0"
 
 # Tuned Flash Mount Options (Low write-amplification for SD cards)
-BTRFS_MOUNT_OPTS="compress=zstd:1,noatime,lazytime,space_cache=v2,commit=120,autodefrag,x-gvfs-show,x-gvfs-name=Soul\\040Stone"
+BTRFS_MOUNT_OPTS="compress=zstd:1,noatime,lazytime,space_cache=v2,commit=120,x-gvfs-show,x-gvfs-name=Soul\\040Stone"
 
 # Modular Storage Mappings (Companion User Directories)
 MAPPINGS=(
