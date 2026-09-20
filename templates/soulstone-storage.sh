@@ -1,12 +1,27 @@
 #!/usr/bin/env bash
-# Soul Stone Dynamic Seamless Modular Storage Engine (Lossless Encrypted Edition)
+# Soul Stone Dynamic Seamless Modular Storage Engine (Production Hardened Edition)
+# Supports Ubuntu 24.04+, Manjaro / Arch, Debian, and Fedora
 set -e
 
-USER_NAME="mr-reaper"
-USER_HOME="/home/$USER_NAME"
+# Dynamic User & Environment Resolution
+if [ -n "$SUDO_USER" ]; then
+    USER_NAME="$SUDO_USER"
+else
+    USER_NAME="$(id -un)"
+fi
+
+USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+[ -z "$USER_HOME" ] && USER_HOME="/home/$USER_NAME"
+
+USER_UID="$(id -u "$USER_NAME")"
+USER_GID="$(id -g "$USER_NAME")"
+
 SD_MOUNT="/mnt/sdcard"
 LUKS_UUID="8636c4f3-09c8-42ce-bf9b-fe273be32b3f"
 BTRFS_UUID="18ceeb84-5abf-4456-88a2-d2f2fb2255f0"
+
+# Tuned Flash Mount Options (Low write-amplification for SD cards)
+BTRFS_MOUNT_OPTS="compress=zstd:1,noatime,lazytime,space_cache=v2,commit=120,autodefrag,x-gvfs-show,x-gvfs-name=Soul\\040Stone"
 
 # Modular Storage Mappings (Companion User Directories)
 MAPPINGS=(
@@ -113,8 +128,17 @@ get_active_device() {
     return 1
 }
 
+apply_flash_nodatacow() {
+    # Disable Copy-on-Write (CoW) on heavy write cache directories
+    for dir in "$SD_MOUNT/Projects" "$SD_MOUNT/Games/wineprefix" "$SD_MOUNT/Games/Heroic/Prefixes"; do
+        if [ -d "$dir" ]; then
+            chattr +C "$dir" 2>/dev/null || true
+        fi
+    done
+}
+
 attach() {
-    log "Attaching Soul Stone full modular storage..."
+    log "Attaching Soul Stone full modular storage for user: $USER_NAME..."
     mkdir -p "$SD_MOUNT"
 
     clean_stale_mounts
@@ -127,7 +151,7 @@ attach() {
             while is_mounted "$SD_MOUNT"; do
                 umount -l "$SD_MOUNT" 2>/dev/null || break
             done
-            mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2,x-gvfs-show,x-gvfs-name=Soul\\040Stone "$dev" "$SD_MOUNT"
+            mount -t btrfs -o "$BTRFS_MOUNT_OPTS" "$dev" "$SD_MOUNT"
         elif [ -d "/media/$USER_NAME/Soul Stone" ] && is_mount_healthy "/media/$USER_NAME/Soul Stone"; then
             mount --bind "/media/$USER_NAME/Soul Stone" "$SD_MOUNT"
         else
@@ -135,7 +159,7 @@ attach() {
             if [ -b "/dev/disk/by-uuid/$LUKS_UUID" ] && [ -f "/etc/soulstone/soulstone.key" ]; then
                 cryptsetup open --key-file=/etc/soulstone/soulstone.key "/dev/disk/by-uuid/$LUKS_UUID" soulstone_crypt 2>/dev/null || true
                 if [ -b "/dev/mapper/soulstone_crypt" ]; then
-                    mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2,x-gvfs-show,x-gvfs-name=Soul\\040Stone "/dev/mapper/soulstone_crypt" "$SD_MOUNT"
+                    mount -t btrfs -o "$BTRFS_MOUNT_OPTS" "/dev/mapper/soulstone_crypt" "$SD_MOUNT"
                 fi
             fi
         fi
@@ -146,31 +170,37 @@ attach() {
         return 1
     fi
 
-    # Set root permissions
-    chown "$USER_NAME:$USER_NAME" "$SD_MOUNT"
+    # Set user ownership and permissions
+    chown "$USER_UID:$USER_GID" "$SD_MOUNT"
     chmod 755 "$SD_MOUNT"
 
     # Set custom volume icon on root mount
     if [ -f "$USER_HOME/.local/share/icons/sdcard.png" ]; then
         cp -f "$USER_HOME/.local/share/icons/sdcard.png" "$SD_MOUNT/.VolumeIcon.png" 2>/dev/null || true
-        chown "$USER_NAME:$USER_NAME" "$SD_MOUNT/.VolumeIcon.png" 2>/dev/null || true
+        chown "$USER_UID:$USER_GID" "$SD_MOUNT/.VolumeIcon.png" 2>/dev/null || true
     fi
 
-    # 1. Bind-mount standard companion folders
+    # Apply nodatacow optimizations on project/game build trees
+    apply_flash_nodatacow
+
+    # 1. Bind-mount standard companion folders with non-destructive conflict reconciliation
+    local conflict_dir="$USER_HOME/.soulstone_conflicts/$(date +%Y%m%d_%H%M%S)"
+
     for mapping in "${MAPPINGS[@]}"; do
         IFS="|" read -r sd_sub local_path <<< "$mapping"
         target_dir="$SD_MOUNT/$sd_sub"
 
         mkdir -p "$target_dir"
-        chown -R "$USER_NAME:$USER_NAME" "$target_dir"
+        chown -R "$USER_UID:$USER_GID" "$target_dir"
         mkdir -p "$local_path"
-        chown -R "$USER_NAME:$USER_NAME" "$local_path"
+        chown -R "$USER_UID:$USER_GID" "$local_path"
 
-        # Auto-sync any files created locally while offline
+        # Reconcile any files created locally while offline
         if [ -d "$local_path" ] && [ "$(ls -A "$local_path" 2>/dev/null)" ]; then
             if ! is_mounted "$local_path"; then
-                log "Migrating offline files: $local_path -> $target_dir (Lossless)..."
-                rsync -av --remove-source-files "$local_path/" "$target_dir/" 2>/dev/null || true
+                log "Reconciling offline files: $local_path -> $target_dir (Safe Sync)..."
+                mkdir -p "$conflict_dir"
+                rsync -avbu --backup-dir="$conflict_dir" --remove-source-files "$local_path/" "$target_dir/" 2>/dev/null || true
                 find "$local_path" -depth -mindepth 1 -type d -empty -delete 2>/dev/null || true
             fi
         fi
@@ -190,7 +220,7 @@ attach() {
     fi
     if ! [ -d "$home_portal" ]; then
         mkdir -p "$home_portal"
-        chown "$USER_NAME:$USER_NAME" "$home_portal"
+        chown "$USER_UID:$USER_GID" "$home_portal"
     fi
 
     if ! is_mounted "$home_portal"; then
@@ -206,8 +236,22 @@ attach() {
 
 detach() {
     log "Detaching Soul Stone modular storage..."
+    sync
     force_detach_all
     log "Soul Stone detached cleanly."
+}
+
+eject() {
+    log "Gracefully ejecting Soul Stone..."
+    sync
+    force_detach_all
+    if [ -b "/dev/mapper/soulstone_crypt" ]; then
+        cryptsetup close soulstone_crypt 2>/dev/null || true
+    fi
+    log "Soul Stone safely unmounted and closed."
+    if command -v notify-send >/dev/null 2>&1; then
+        su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "Safe to remove SD card." 2>/dev/null || true'
+    fi
 }
 
 status() {
@@ -240,11 +284,14 @@ case "${1:-status}" in
     detach)
         detach
         ;;
+    eject)
+        eject
+        ;;
     status)
         status
         ;;
     *)
-        echo "Usage: $0 {attach|detach|status}"
+        echo "Usage: $0 {attach|detach|eject|status}"
         exit 1
         ;;
 esac
