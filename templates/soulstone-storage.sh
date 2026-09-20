@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Soul Stone Dynamic Seamless Modular Storage Engine
+# Soul Stone Dynamic Seamless Modular Storage Engine (Lossless Encrypted Edition)
 set -e
 
 USER_NAME="mr-reaper"
 USER_HOME="/home/$USER_NAME"
 SD_MOUNT="/mnt/sdcard"
-UUID="d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2"
-SD_DEV="/dev/disk/by-uuid/$UUID"
+LUKS_UUID="8636c4f3-09c8-42ce-bf9b-fe273be32b3f"
+BTRFS_UUID="18ceeb84-5abf-4456-88a2-d2f2fb2255f0"
 
-# Companion Modular Storage Mappings
+# Modular Storage Mappings (Companion User Directories)
 MAPPINGS=(
     "Archives|$USER_HOME/Archives"
     "Documents|$USER_HOME/Documents"
@@ -21,6 +21,7 @@ MAPPINGS=(
     "Projects/Pycharm Projects|$USER_HOME/Pycharm Projects"
     "Projects/Arduino Projects|$USER_HOME/Arduino Projects"
     "Projects/Godot Projects|$USER_HOME/Godot Projects"
+    "Games|$USER_HOME/Games"
 )
 
 log() {
@@ -35,7 +36,7 @@ is_mounted() {
 is_mount_healthy() {
     local target="$1"
     if mountpoint -q "$target" 2>/dev/null; then
-        if ls -A "$target" >/dev/null 2>&1; then
+        if timeout 1.5 ls -A "$target" >/dev/null 2>&1; then
             return 0
         fi
     fi
@@ -53,14 +54,12 @@ clean_stale_mounts() {
         fi
     done
 
-    # Clean ~/Soul Stone portal mount if stale
     if is_mounted "$USER_HOME/Soul Stone"; then
         if ! is_mount_healthy "$USER_HOME/Soul Stone"; then
             umount -l "$USER_HOME/Soul Stone" 2>/dev/null || true
         fi
     fi
 
-    # Clean dead mounts on /mnt/sdcard if device is unreadable
     if is_mounted "$SD_MOUNT"; then
         if ! is_mount_healthy "$SD_MOUNT"; then
             umount -l "$SD_MOUNT" 2>/dev/null || true
@@ -77,8 +76,8 @@ force_detach_all() {
         done
     done
 
-    while is_mounted "$USER_HOME/SD Card"; do
-        umount -l "$USER_HOME/SD Card" 2>/dev/null || break
+    while is_mounted "$USER_HOME/Soul Stone"; do
+        umount -l "$USER_HOME/Soul Stone" 2>/dev/null || break
     done
 
     while is_mounted "$SD_MOUNT"; do
@@ -86,48 +85,65 @@ force_detach_all() {
     done
 }
 
+get_active_device() {
+    if is_mounted "$SD_MOUNT"; then
+        echo "$SD_MOUNT"
+        return 0
+    fi
+    if [ -b "/dev/mapper/soulstone_crypt" ]; then
+        echo "/dev/mapper/soulstone_crypt"
+        return 0
+    fi
+    if [ -b "/dev/disk/by-uuid/$BTRFS_UUID" ]; then
+        echo "/dev/disk/by-uuid/$BTRFS_UUID"
+        return 0
+    fi
+    local luks_map
+    luks_map=$(find /dev/mapper -name "luks-*" 2>/dev/null | head -n 1)
+    if [ -n "$luks_map" ] && [ -b "$luks_map" ]; then
+        echo "$luks_map"
+        return 0
+    fi
+    local label_dev
+    label_dev=$(blkid -L "Soul Stone" 2>/dev/null || true)
+    if [ -n "$label_dev" ] && [ -b "$label_dev" ]; then
+        echo "$label_dev"
+        return 0
+    fi
+    return 1
+}
+
 attach() {
-    log "Attaching Soul Stone companion modular storage..."
+    log "Attaching Soul Stone full modular storage..."
     mkdir -p "$SD_MOUNT"
 
-    # 1. Clean any dead mounts first
     clean_stale_mounts
 
-    # 2. Mount root filesystem if not already mounted
+    local dev
+    dev=$(get_active_device || true)
+
     if ! is_mount_healthy "$SD_MOUNT"; then
-        if [ -b "$SD_DEV" ]; then
+        if [ -n "$dev" ] && [ -b "$dev" ]; then
             while is_mounted "$SD_MOUNT"; do
                 umount -l "$SD_MOUNT" 2>/dev/null || break
             done
-            mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2 "$SD_DEV" "$SD_MOUNT"
-            log "Mounted $SD_DEV to $SD_MOUNT"
+            mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2,x-gvfs-show,x-gvfs-name=Soul\\040Stone "$dev" "$SD_MOUNT"
+        elif [ -d "/media/$USER_NAME/Soul Stone" ] && is_mount_healthy "/media/$USER_NAME/Soul Stone"; then
+            mount --bind "/media/$USER_NAME/Soul Stone" "$SD_MOUNT"
         else
-            log "Error: Soul Stone block device $SD_DEV not found."
-            exit 1
+            log "No decrypted Soul Stone volume found. Attempting cryptsetup..."
+            if [ -b "/dev/disk/by-uuid/$LUKS_UUID" ] && [ -f "/etc/soulstone/soulstone.key" ]; then
+                cryptsetup open --key-file=/etc/soulstone/soulstone.key "/dev/disk/by-uuid/$LUKS_UUID" soulstone_crypt 2>/dev/null || true
+                if [ -b "/dev/mapper/soulstone_crypt" ]; then
+                    mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2,x-gvfs-show,x-gvfs-name=Soul\\040Stone "/dev/mapper/soulstone_crypt" "$SD_MOUNT"
+                fi
+            fi
         fi
     fi
 
-    # 3. Process each directory mapping
-    for mapping in "${MAPPINGS[@]}"; do
-        IFS="|" read -r sd_sub local_path <<< "$mapping"
-        local sd_path="$SD_MOUNT/$sd_sub"
-
-        mkdir -p "$sd_path"
-        chown -R "$USER_NAME:$USER_NAME" "$sd_path" 2>/dev/null || true
-
-        if [ -L "$local_path" ]; then
-            rm -f "$local_path"
-            mkdir -p "$local_path"
-            chown "$USER_NAME:$USER_NAME" "$local_path"
-        elif [ ! -e "$local_path" ]; then
-            mkdir -p "$local_path"
-            chown "$USER_NAME:$USER_NAME" "$local_path"
-        elif [ -b "/dev/mapper/soulstone_crypt" ]; then
-            mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2 "/dev/mapper/soulstone_crypt" "$SD_MOUNT"
-        else
-            log "Device $SD_DEV not found or not unlocked. Cannot attach."
-            return 1
-        fi
+    if ! is_mount_healthy "$SD_MOUNT"; then
+        log "Could not mount Soul Stone. Aborting."
+        return 1
     fi
 
     # Set root permissions
@@ -166,9 +182,10 @@ attach() {
         fi
     done
 
-    # 4. Single ~/Soul Stone folder with custom SD card icon
+    # 2. Single ~/Soul Stone home portal with custom SD card icon
     local home_portal="$USER_HOME/Soul Stone"
-    if [ -L "$home_portal" ]; then
+    rm -rf "$USER_HOME/SD Card" 2>/dev/null || true
+    if [ -L "$home_portal" ] || [ -f "$home_portal" ]; then
         rm -f "$home_portal"
     fi
     if ! [ -d "$home_portal" ]; then
@@ -182,7 +199,7 @@ attach() {
     fi
 
     # Set GNOME custom icon on ~/Soul Stone
-    su - "$USER_NAME" -c 'gio set "/home/'"$USER_NAME"'/Soul Stone" metadata::custom-icon "file:///home/'"$USER_NAME"'/.local/share/icons/sdcard.png" 2>/dev/null || true'
+    su - "$USER_NAME" -c "gio set '$USER_HOME/Soul Stone' metadata::custom-icon 'file://$USER_HOME/.local/share/icons/sdcard.png' 2>/dev/null || true"
 
     log "Soul Stone successfully attached and active!"
 }
@@ -196,7 +213,7 @@ detach() {
 status() {
     echo "=== Soul Stone Status ==="
     if is_mounted "$SD_MOUNT"; then
-        echo "Root: MOUNTED on $SD_MOUNT ($(findmnt -n -o SOURCE "$SD_MOUNT" 2>/dev/null || echo "$SD_DEV"))"
+        echo "Root: MOUNTED on $SD_MOUNT ($(findmnt -n -o SOURCE "$SD_MOUNT" 2>/dev/null || echo "Active"))"
     else
         echo "Root: NOT MOUNTED"
     fi
@@ -216,24 +233,18 @@ status() {
     fi
 }
 
-case "$1" in
+case "${1:-status}" in
     attach)
         attach
         ;;
     detach)
         detach
         ;;
-    clean)
-        clean_stale_mounts
-        ;;
-    force-detach)
-        force_detach_all
-        ;;
     status)
         status
         ;;
     *)
-        echo "Usage: $0 {attach|detach|clean|force-detach|status}"
+        echo "Usage: $0 {attach|detach|status}"
         exit 1
         ;;
 esac

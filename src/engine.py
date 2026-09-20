@@ -34,6 +34,8 @@ DEFAULT_MAPPINGS = [
     "Projects/Pycharm Projects",
     "Projects/Arduino Projects",
     "Projects/Godot Projects",
+    "Games",
+    "Games/Heroic",
 ]
 
 PURPLE_SYMBOLIC_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">

@@ -1,4 +1,10 @@
-# Strictly match ONLY the Soul Stone Modular Storage SD Card (UUID d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2)
-# All other external drives, generic SD cards, and USB thumb drives use stock system icons and standard mounts.
-SUBSYSTEM=="block", ENV{ID_FS_UUID}=="d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2", ACTION=="add", ENV{ID_DRIVE_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd", ENV{UDISKS_NAME}="Soul Stone", TAG+="systemd", ENV{SYSTEMD_WANTS}="soulstone-storage.service"
-SUBSYSTEM=="block", ENV{ID_FS_UUID}=="d13ea8f7-ccfa-45c2-bbb6-af57fd6472e2", ACTION=="remove", RUN+="/usr/local/bin/soulstone-storage detach"
+# Soul Stone Dynamic Udev Rules
+# 1. Hide FAT32 Windows unlocker boot partition from dock
+SUBSYSTEM=="block", ENV{ID_FS_LABEL}=="SOUL_BOOT", ENV{UDISKS_IGNORE}="1"
+
+# 2. Trigger auto-attach on block device add/change
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DM_NAME}=="soulstone_crypt", TAG+="systemd", ENV{SYSTEMD_WANTS}+="soulstone-storage.service"
+ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_FS_UUID}=="18ceeb84-5abf-4456-88a2-d2f2fb2255f0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="soulstone-storage.service"
+
+# 3. Trigger auto-detach on device removal
+ACTION=="remove", SUBSYSTEM=="block", ENV{DM_NAME}=="soulstone_crypt", RUN+="/usr/local/bin/soulstone-storage detach"
