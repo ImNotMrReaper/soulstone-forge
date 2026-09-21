@@ -1,0 +1,11 @@
+# Universal SD Card & Removable Flash Icon Mapping (Post-Persistent-Storage)
+# Ensures all SD cards, MMC, and Soul Stone flash drives display the custom SD card icon,
+# while standard external HDDs and SSDs retain their regular drive icons.
+
+SUBSYSTEM=="block", ENV{ID_MODEL}=="*SD*", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
+SUBSYSTEM=="block", ENV{ID_MODEL}=="*MMC*", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
+SUBSYSTEM=="block", ENV{ID_MODEL}=="*Card*Reader*", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
+SUBSYSTEM=="block", ENV{ID_VENDOR_ID}=="0bda", ENV{ID_MODEL_ID}=="0177", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
+SUBSYSTEM=="block", KERNEL=="mmcblk*", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
+SUBSYSTEM=="block", ENV{DM_NAME}=="soulstone_crypt", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
+SUBSYSTEM=="block", ENV{ID_FS_LABEL}=="Soul Stone", ENV{ID_DRIVE_FLASH_SD}="1", ENV{ID_DRIVE_MEDIA_FLASH_SD}="1", ENV{UDISKS_ICON_NAME}="media-flash-sd"
