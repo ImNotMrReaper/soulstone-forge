@@ -32,17 +32,33 @@ KEYFILE="/etc/soulstone/soulstone.key"
 REPO_PATH="/home/mr-reaper/.local/share/soulstone-forge"
 TEST_FILE="/mnt/sdcard/.soulstone_test_$(date +%s)"
 
-EXPECTED_OVERLAYS=(
-  "/home/mr-reaper/Archives"
-  "/home/mr-reaper/Documents"
-  "/home/mr-reaper/Downloads"
-  "/home/mr-reaper/Pictures"
-  "/home/mr-reaper/Music"
-  "/home/mr-reaper/Videos"
-  "/home/mr-reaper/Movies"
-  "/home/mr-reaper/Projects"
-  "/home/mr-reaper/Games"
-)
+EXPECTED_OVERLAYS=()
+CONFIG_FILE="/home/mr-reaper/.config/soulstone/overlays.conf"
+if [ -f "$CONFIG_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        if [[ "$line" == *"|"* ]]; then
+            IFS="|" read -r sub loc <<< "$line"
+            EXPECTED_OVERLAYS+=("$loc")
+        else
+            EXPECTED_OVERLAYS+=("/home/mr-reaper/$line")
+        fi
+    done < "$CONFIG_FILE"
+fi
+if [ "${#EXPECTED_OVERLAYS[@]}" -eq 0 ]; then
+    EXPECTED_OVERLAYS=(
+      "/home/mr-reaper/Archives"
+      "/home/mr-reaper/Documents"
+      "/home/mr-reaper/Downloads"
+      "/home/mr-reaper/Pictures"
+      "/home/mr-reaper/Music"
+      "/home/mr-reaper/Videos"
+      "/home/mr-reaper/Movies"
+      "/home/mr-reaper/Projects"
+    )
+fi
+
 
 EXPECTED_SYMLINKS=(
   "/home/mr-reaper/Pycharm Projects"

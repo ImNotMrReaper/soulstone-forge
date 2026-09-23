@@ -306,14 +306,113 @@ attach() {
     # Set GNOME custom icon on ~/Soul Stone
     su - "$USER_NAME" -c "gio set '$USER_HOME/Soul Stone' metadata::custom-icon 'file://$USER_HOME/.local/share/icons/sdcard.png' 2>/dev/null || true"
 
+    # Update directory skeleton snapshot for offline host parity
+    update_directory_skeleton
+
     log "Soul Stone successfully attached and active!"
+    if command -v notify-send >/dev/null 2>&1; then
+        su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "SD Card connected. Folders mounted." 2>/dev/null || true'
+    fi
+}
+
+update_directory_skeleton() {
+    local skeleton_file="$CONFIG_DIR/directory_skeleton.txt"
+    mkdir -p "$CONFIG_DIR"
+    if [ -d "$SD_MOUNT" ]; then
+        python3 -c "
+import os
+sd = '$SD_MOUNT'
+skeleton = '$skeleton_file'
+companion_dirs = ['Documents', 'Projects', 'Pictures', 'Music', 'Videos', 'Movies', 'Archives', 'Downloads', 'Games']
+dirs = []
+for c in companion_dirs:
+    p = os.path.join(sd, c)
+    if os.path.isdir(p):
+        dirs.append(c)
+        for root, d_list, _ in os.walk(p):
+            d_list[:] = [d for d in d_list if d not in ['.Trash-1000', '.git', '__pycache__', '.cache', 'node_modules']]
+            for d in d_list:
+                full = os.path.join(root, d)
+                dirs.append(os.path.relpath(full, sd))
+dirs.sort()
+with open(skeleton, 'w') as f:
+    f.write('\n'.join(dirs) + '\n')
+" 2>/dev/null || true
+        chown "$USER_UID:$USER_GID" "$skeleton_file" 2>/dev/null || true
+    fi
+}
+
+ensure_local_directories() {
+    log "Ensuring all native companion directories and full subdirectories exist locally on computer..."
+    local skeleton_file="$CONFIG_DIR/directory_skeleton.txt"
+    if [ -f "$skeleton_file" ]; then
+        python3 -c "
+import os
+home = '$USER_HOME'
+uid = int('$USER_UID')
+gid = int('$USER_GID')
+try:
+    with open('$skeleton_file', 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            rel = line.strip()
+            if not rel:
+                continue
+            path = os.path.join(home, rel)
+            if not os.path.isdir(path):
+                os.makedirs(path, exist_ok=True)
+                try:
+                    os.chown(path, uid, gid)
+                except Exception:
+                    pass
+except Exception:
+    pass
+" 2>/dev/null || true
+    else
+        mkdir -p "$USER_HOME/Projects/Arduino Projects"
+        mkdir -p "$USER_HOME/Projects/Godot Projects"
+        mkdir -p "$USER_HOME/Projects/Pycharm Projects"
+        mkdir -p "$USER_HOME/Documents/backups/timeshift"
+        mkdir -p "$USER_HOME/Downloads"
+        mkdir -p "$USER_HOME/Pictures/Screenshots"
+        mkdir -p "$USER_HOME/Pictures/Wallpapers"
+        mkdir -p "$USER_HOME/Music"
+        mkdir -p "$USER_HOME/Videos"
+        mkdir -p "$USER_HOME/Movies"
+        mkdir -p "$USER_HOME/Archives"
+        mkdir -p "$USER_HOME/Games/Heroic"
+    fi
+
+    # Ensure Timeshift symlinks in local Backups folder
+    local local_ts="$USER_HOME/Documents/backups/timeshift"
+    mkdir -p "$local_ts"
+    ln -sfn /timeshift/snapshots "$local_ts/snapshots" 2>/dev/null || true
+    ln -sfn /timeshift/snapshots-boot "$local_ts/snapshots-boot" 2>/dev/null || true
+    ln -sfn /timeshift/snapshots-daily "$local_ts/snapshots-daily" 2>/dev/null || true
+    ln -sfn /timeshift/snapshots-ondemand "$local_ts/snapshots-ondemand" 2>/dev/null || true
+    ln -sfn /var/log/timeshift "$local_ts/logs" 2>/dev/null || true
+    chown -R "$USER_UID:$USER_GID" "$USER_HOME/Documents/backups" 2>/dev/null || true
+
+    for ide_dir in "${IDE_DIRS[@]}"; do
+        local ide_target="$USER_HOME/Projects/$ide_dir"
+        local ide_link="$USER_HOME/$ide_dir"
+        mkdir -p "$ide_target"
+        ln -sfn "$ide_target" "$ide_link"
+        chown -h "$USER_UID:$USER_GID" "$ide_link"
+    done
 }
 
 detach() {
     log "Detaching Soul Stone modular storage..."
     sync
     force_detach_all
+    if [ -b "/dev/mapper/soulstone_crypt" ]; then
+        cryptsetup close soulstone_crypt 2>/dev/null || true
+    fi
+    ensure_local_directories
     log "Soul Stone detached cleanly."
+    if command -v notify-send >/dev/null 2>&1; then
+        su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "SD card unmounted cleanly." 2>/dev/null || true'
+    fi
 }
 
 eject() {
@@ -323,6 +422,7 @@ eject() {
     if [ -b "/dev/mapper/soulstone_crypt" ]; then
         cryptsetup close soulstone_crypt 2>/dev/null || true
     fi
+    ensure_local_directories
     log "Soul Stone safely unmounted and closed."
     if command -v notify-send >/dev/null 2>&1; then
         su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "Safe to remove SD card." 2>/dev/null || true'
