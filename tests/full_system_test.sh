@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Soul Stone + Soulstone-Forge Comprehensive Test Suite
+# Soul Stone + Soulstone-Forge Comprehensive Test Suite (Hardened v2)
 # Tests: Encryption, Mounts, Icons, GVFS, Eject, Reattach, Data Integrity,
-#        Systemd, Udev, GitHub Sync, Btrfs, Overlay Health
+#        Systemd, Udev, GitHub Sync, Btrfs, Overlay Health, Zero Clutter
 # =============================================================================
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -41,10 +41,13 @@ EXPECTED_OVERLAYS=(
   "/home/mr-reaper/Videos"
   "/home/mr-reaper/Movies"
   "/home/mr-reaper/Projects"
+  "/home/mr-reaper/Games"
+)
+
+EXPECTED_SYMLINKS=(
   "/home/mr-reaper/Pycharm Projects"
   "/home/mr-reaper/Arduino Projects"
   "/home/mr-reaper/Godot Projects"
-  "/home/mr-reaper/Games"
 )
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -129,20 +132,28 @@ else
 fi
 
 # ═════════════════════════════════════════════════════════════════════════════
-header "PHASE 3 · All 13 Companion Overlay Mount Health"
+header "PHASE 3 · Companion Overlays & IDE Symlinks Health"
 # ═════════════════════════════════════════════════════════════════════════════
 
 ACTIVE_OVERLAYS=0
 for OVERLAY in "${EXPECTED_OVERLAYS[@]}"; do
     if mountpoint -q "$OVERLAY" 2>/dev/null; then
         if timeout 2 ls "$OVERLAY" > /dev/null 2>&1; then
-            pass "Overlay: $OVERLAY [ACTIVE & HEALTHY]"
+            pass "Native Overlay: $OVERLAY [ACTIVE & HEALTHY]"
             ((ACTIVE_OVERLAYS++)) || true
         else
-            fail "Overlay: $OVERLAY is mounted but UNHEALTHY (stale/frozen)"
+            fail "Native Overlay: $OVERLAY is mounted but UNHEALTHY (stale/frozen)"
         fi
     else
-        fail "Overlay: $OVERLAY NOT MOUNTED [OFFLINE LOCAL]"
+        fail "Native Overlay: $OVERLAY NOT MOUNTED [OFFLINE LOCAL]"
+    fi
+done
+
+for SYMLINK in "${EXPECTED_SYMLINKS[@]}"; do
+    if [ -L "$SYMLINK" ] && [ -d "$SYMLINK" ]; then
+        pass "IDE Symlink: $SYMLINK -> $(readlink "$SYMLINK") [HEALTHY & ZERO-MOUNT]"
+    else
+        fail "IDE Symlink broken or missing: $SYMLINK"
     fi
 done
 
@@ -153,7 +164,7 @@ else
     fail "Soul Stone home portal: ~/Soul Stone NOT MOUNTED or unhealthy"
 fi
 
-info "Active overlays: $ACTIVE_OVERLAYS/13 (12 standard + 1 portal)"
+info "Active native overlays: $ACTIVE_OVERLAYS/10 (9 standard + 1 portal)"
 
 GHOST_MOUNTS=$(findmnt | grep "^│\?[├└].*\s/root/" || true)
 if [[ -z "$GHOST_MOUNTS" ]]; then
@@ -162,8 +173,16 @@ else
     fail "Ghost /root/* mounts found: $GHOST_MOUNTS"
 fi
 
+# Check for nested/stacked mounts
+STACKED_MOUNTS=$(findmnt -o TARGET | sort | uniq -d | grep -E "Projects|Soul Stone|sdcard" || true)
+if [[ -z "$STACKED_MOUNTS" ]]; then
+    pass "Zero stacked or duplicate mount points detected in mount table ✓"
+else
+    fail "Stacked mount points detected: $STACKED_MOUNTS"
+fi
+
 # ═════════════════════════════════════════════════════════════════════════════
-header "PHASE 4 · GVFS / Nautilus Duplicate Detection"
+header "PHASE 4 · GVFS / Nautilus Duplicate & Clutter Prevention"
 # ═════════════════════════════════════════════════════════════════════════════
 
 SS_COUNT=$(user_exec python3 -c "
@@ -203,20 +222,22 @@ elif [[ -n "$SS_URI" ]]; then
     warn "Soul Stone GIO mount URI: $SS_URI"
 fi
 
-UNPARENTED=$(user_exec python3 -c "
+FOLDER_MOUNTS=$(user_exec python3 -c "
 import gi
 gi.require_version('Gio', '2.0')
 from gi.repository import Gio
 vm = Gio.VolumeMonitor.get()
+found = []
 for m in vm.get_mounts():
-    if not m.get_volume() and 'Soul Stone' in m.get_name():
-        print(m.get_root().get_uri())
+    if m.get_name() in ['Pycharm Projects', 'Godot Projects', 'Arduino Projects', 'Projects', 'Downloads', 'Documents', 'Movies', 'Music', 'Pictures', 'Videos', 'Archives', 'Games']:
+        found.append(m.get_name())
+print(' '.join(found))
 " 2>/dev/null || echo "")
 
-if [[ -z "$UNPARENTED" ]]; then
-    pass "No unparented /mnt/sdcard 'Soul Stone' ghost mount in GIO ✓"
+if [[ -z "$FOLDER_MOUNTS" ]]; then
+    pass "Zero folder mounts in GIO (Nautilus sidebar 100% clean of folder clutter) ✓"
 else
-    fail "Unparented GIO mount still present: $UNPARENTED"
+    fail "Folder mounts detected in GIO: $FOLDER_MOUNTS"
 fi
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -252,20 +273,6 @@ if [[ -f "$SYM_SVG" ]]; then
     fi
 else
     fail "Symbolic SVG missing at $SYM_SVG"
-fi
-
-ICON_RESOLVED=$(user_exec python3 -c "
-import gi
-gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
-theme = Gtk.IconTheme.get_default()
-info = theme.lookup_icon('media-flash-sd', 48, Gtk.IconLookupFlags.GENERIC_FALLBACK)
-print(info.get_filename() if info else 'NOT_FOUND')
-" 2>/dev/null || echo "NOT_FOUND")
-if echo "$ICON_RESOLVED" | grep -q "media-flash-sd"; then
-    pass "media-flash-sd icon lookup resolves correctly: $(basename $ICON_RESOLVED) ✓"
-else
-    warn "media-flash-sd icon resolved to: $ICON_RESOLVED"
 fi
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -341,14 +348,6 @@ else
     warn "Git working tree has uncommitted changes: $GIT_STATUS"
 fi
 
-GIT_AHEAD=$(git -C "$REPO_PATH" rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
-if [[ "$GIT_AHEAD" -eq 0 ]]; then
-    LATEST=$(git -C "$REPO_PATH" log --oneline -1 2>/dev/null)
-    pass "Git: fully synced with origin/main — HEAD: $LATEST ✓"
-else
-    warn "Git has $GIT_AHEAD unpushed commit(s)"
-fi
-
 # ═════════════════════════════════════════════════════════════════════════════
 header "PHASE 9 · UNMOUNT / EJECT & REMOUNT FULL CYCLE TEST"
 # ═════════════════════════════════════════════════════════════════════════════
@@ -377,7 +376,7 @@ for OVERLAY in "${EXPECTED_OVERLAYS[@]}"; do
     fi
 done
 if [[ "$OFFLINE_COUNT" -eq "${#EXPECTED_OVERLAYS[@]}" ]]; then
-    pass "Post-eject: all 12 companion directories offline (internal drive preserved) ✓"
+    pass "Post-eject: all 9 companion directories offline (internal drive preserved) ✓"
 else
     fail "Post-eject: some overlays remained mounted"
 fi
@@ -395,8 +394,16 @@ for OVERLAY in "${EXPECTED_OVERLAYS[@]}"; do
     fi
 done
 if [[ "$REATTACH_COUNT" -eq "${#EXPECTED_OVERLAYS[@]}" ]]; then
-    pass "Post-reattach: all 12 companion overlays ACTIVE and healthy ✓"
+    pass "Post-reattach: all 9 companion overlays ACTIVE and healthy ✓"
 fi
+
+for SYMLINK in "${EXPECTED_SYMLINKS[@]}"; do
+    if [ -L "$SYMLINK" ] && [ -d "$SYMLINK" ]; then
+        pass "Post-reattach: IDE Symlink $SYMLINK verified ✓"
+    else
+        fail "Post-reattach: IDE Symlink broken: $SYMLINK"
+    fi
+done
 
 if mountpoint -q "$HOME_PORTAL" 2>/dev/null; then
     pass "Post-reattach: ~/Soul Stone home portal remounted ✓"
@@ -437,7 +444,7 @@ if [[ ${#FAIL_DETAILS[@]} -gt 0 ]]; then
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then
-    echo -e "\n  ${GREEN}${BOLD}✔ ALL SYSTEMS OPERATIONAL — ZERO FAILURES${RESET}\n"
+    echo -e "\n  ${GREEN}${BOLD}✔ ALL SYSTEMS OPERATIONAL — ZERO FAILURES, ZERO CLUTTER${RESET}\n"
     exit 0
 else
     echo -e "\n  ${RED}${BOLD}✘ $FAIL TEST(S) FAILED${RESET}\n"

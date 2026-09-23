@@ -31,16 +31,18 @@ DEFAULT_MAPPINGS = [
     "Videos",
     "Movies",
     "Projects",
-    "Projects/Pycharm Projects",
-    "Projects/Arduino Projects",
-    "Projects/Godot Projects",
     "Games",
-    "Games/Heroic",
 ]
 
-PURPLE_SYMBOLIC_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <path fill="#7764D8" fill-rule="evenodd" d="M 2 0.5 C 1.17 0.5 0.5 1.17 0.5 2 L 0.5 14 C 0.5 14.83 1.17 15.5 2 15.5 L 14 15.5 C 14.83 15.5 15.5 14.83 15.5 14 L 15.5 4.8 C 15.5 4.4 15.34 4.02 15.06 3.74 L 12.26 0.94 C 11.98 0.66 11.6 0.5 11.2 0.5 L 2 0.5 z M 2 1.8 L 10.7 1.8 L 14.2 5.3 L 14.2 14.2 L 2 14.2 L 2 1.8 z M 3.2 2.8 L 3.2 6.2 L 4.6 6.2 L 4.6 2.8 L 3.2 2.8 z M 5.6 2.8 L 5.6 6.2 L 7 6.2 L 7 2.8 L 5.6 2.8 z M 8 2.8 L 8 6.2 L 9.4 6.2 L 9.4 2.8 L 8 2.8 z M 10.4 2.8 L 10.4 5.2 L 11.8 5.2 L 11.8 2.8 L 10.4 2.8 z M 4.5 8 C 3.7 8 3 8.7 3 9.5 L 3 12.5 C 3 13.3 3.7 14 4.5 14 L 11.5 14 C 12.3 14 13 13.3 13 12.5 L 13 9.5 C 13 8.7 12.3 8 11.5 8 L 4.5 8 z M 4.5 9.2 L 11.5 9.2 L 11.5 12.8 L 4.5 12.8 L 4.5 9.2 z"/>
+PURPLE_SYMBOLIC_SVG = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <path fill="currentColor"
+    d="M 3 0 L 11.5 0 Q 14 0 14 2.5 L 14 14 Q 14 16 11.5 16 L 4.5 16 Q 2 16 2 14 L 2 2 L 0 4 L 0 2.5 Q 0 0 3 0 Z
+       M 4 0.5 L 4 4 L 5.5 4 L 5.5 0.5 Z
+       M 6.5 0.5 L 6.5 4 L 8 4 L 8 0.5 Z
+       M 9 0.5 L 9 4 L 10.5 4 L 10.5 0.5 Z
+       M 4 8 Q 4 7 5 7 L 11 7 Q 12 7 12 8 L 12 13 Q 12 14 11 14 L 5 14 Q 4 14 4 13 Z"/>
 </svg>'''
+
 
 BANNER = r"""
   ____             _ ____  _                      _____                 
@@ -474,11 +476,15 @@ def interactive_cli():
     print(" [2] 🔄 Clone / Move an Encrypted Soul Stone to a new card")
     print(" [3] 🎨 Reinstall & Refresh Custom Purple SD Card Icons")
     print(" [4] 📊 View Current Soul Stone Status & Health")
-    print(" [5] 🔌 Attach / Detach Soul Stone manually")
+    print(" [5] 📋 List Bound Overlays vs Standalone Extra Storage")
+    print(" [6] 🔗 Link a folder to Soul Stone (Auto-binds on attach)")
+    print(" [7] 🗄️ Unlink a folder (Keep as standalone storage off PC)")
+    print(" [8] 🔌 Attach / Detach Soul Stone manually")
+    print(" [9] ⏏️ Eject Soul Stone safely")
     print(" [0] Exit")
     print("-" * 65)
 
-    choice = input("Enter choice (0-5): ").strip()
+    choice = input("Enter choice (0-9): ").strip()
     if choice == "1":
         devices = list_safe_devices()
         if not devices:
@@ -523,9 +529,25 @@ def interactive_cli():
         run_cmd("/usr/local/bin/soulstone-storage status", check=False, capture=False)
 
     elif choice == "5":
+        run_cmd("/usr/local/bin/soulstone-storage list", check=False, capture=False)
+
+    elif choice == "6":
+        fld = input("Enter name of folder to link (e.g. VirtualMachines or Projects): ").strip()
+        if fld:
+            run_cmd(f"sudo /usr/local/bin/soulstone-storage link '{fld}'", check=False, capture=False)
+
+    elif choice == "7":
+        fld = input("Enter name of folder to unlink (moves to standalone storage): ").strip()
+        if fld:
+            run_cmd(f"sudo /usr/local/bin/soulstone-storage unlink '{fld}'", check=False, capture=False)
+
+    elif choice == "8":
         act = input("Enter 'attach' or 'detach': ").strip().lower()
         if act in ["attach", "detach"]:
-            run_cmd(f"/usr/local/bin/soulstone-storage {act}", capture=False)
+            run_cmd(f"sudo /usr/local/bin/soulstone-storage {act}", capture=False)
+
+    elif choice == "9":
+        run_cmd("sudo /usr/local/bin/soulstone-storage eject", capture=False)
 
 def main():
     parser = argparse.ArgumentParser(description="SoulStone Forge - Encrypted Removable Modular Storage Engine")
@@ -533,8 +555,36 @@ def main():
     parser.add_argument("--passphrase", default="soulkeeper", help="Encryption passphrase (default: soulkeeper)")
     parser.add_argument("--install-icons", action="store_true", help="Reinstall custom purple SD card icons")
     parser.add_argument("--status", action="store_true", help="Check live Soul Stone status")
-    
-    args = parser.parse_args()
+    parser.add_argument("--list", action="store_true", help="List bound overlays vs standalone extra storage")
+    parser.add_argument("--link", metavar="FOLDER", help="Link a local folder to Soul Stone (auto-binds on attach)")
+    parser.add_argument("--unlink", metavar="FOLDER", help="Unlink a folder from PC (keeps as extra storage on card)")
+    parser.add_argument("--attach", action="store_true", help="Attach all companion overlays")
+    parser.add_argument("--detach", action="store_true", help="Detach all companion overlays")
+    parser.add_argument("--eject", action="store_true", help="Gracefully eject Soul Stone")
+
+    args, remaining = parser.parse_known_args()
+
+    # Support shorthand positional commands: soulstone link <folder>, soulstone list, soulstone status, etc.
+    if remaining:
+        cmd = remaining[0].lower()
+        if cmd in ["link", "bind"] and len(remaining) > 1:
+            run_cmd(f"sudo /usr/local/bin/soulstone-storage link '{remaining[1]}'", check=False, capture=False)
+            return
+        elif cmd in ["unlink", "unbind"] and len(remaining) > 1:
+            run_cmd(f"sudo /usr/local/bin/soulstone-storage unlink '{remaining[1]}'", check=False, capture=False)
+            return
+        elif cmd == "list":
+            run_cmd("/usr/local/bin/soulstone-storage list", check=False, capture=False)
+            return
+        elif cmd == "status":
+            run_cmd("/usr/local/bin/soulstone-storage status", check=False, capture=False)
+            return
+        elif cmd == "eject":
+            run_cmd("sudo /usr/local/bin/soulstone-storage eject", capture=False)
+            return
+        elif cmd in ["attach", "detach"]:
+            run_cmd(f"sudo /usr/local/bin/soulstone-storage {cmd}", capture=False)
+            return
 
     if args.forge:
         forge_encrypted_card(args.forge, args.passphrase)
@@ -542,8 +592,21 @@ def main():
         install_icons()
     elif args.status:
         run_cmd("/usr/local/bin/soulstone-storage status", check=False, capture=False)
+    elif args.list:
+        run_cmd("/usr/local/bin/soulstone-storage list", check=False, capture=False)
+    elif args.link:
+        run_cmd(f"sudo /usr/local/bin/soulstone-storage link '{args.link}'", check=False, capture=False)
+    elif args.unlink:
+        run_cmd(f"sudo /usr/local/bin/soulstone-storage unlink '{args.unlink}'", check=False, capture=False)
+    elif args.attach:
+        run_cmd("sudo /usr/local/bin/soulstone-storage attach", capture=False)
+    elif args.detach:
+        run_cmd("sudo /usr/local/bin/soulstone-storage detach", capture=False)
+    elif args.eject:
+        run_cmd("sudo /usr/local/bin/soulstone-storage eject", capture=False)
     else:
         interactive_cli()
 
 if __name__ == "__main__":
     main()
+
