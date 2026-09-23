@@ -1,0 +1,8 @@
+# /etc/fstab: static file system information.
+#
+# <file system> <mount point>   <type>  <options>       <dump>  <pass>
+# / was on /dev/nvme0n1p2 during curtin installation
+/dev/disk/by-uuid/468759a2-2b08-47a5-846a-1411fd310b93 / ext4 defaults 0 1
+# /boot/efi was on /dev/nvme0n1p1 during curtin installation
+/dev/disk/by-uuid/C337-55A1 /boot/efi vfat defaults 0 1
+/dev/mapper/soulstone_crypt /mnt/sdcard btrfs compress=zstd:1,noatime,lazytime,space_cache=v2,commit=120,nofail,x-systemd.automount,x-systemd.device-timeout=5,x-gvfs-hide 0 0
