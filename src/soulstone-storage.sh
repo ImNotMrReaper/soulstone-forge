@@ -255,7 +255,7 @@ attach() {
                 log "Reconciling offline files: $local_path -> $target_dir (Safe Sync)..."
                 mkdir -p "$conflict_dir"
                 rsync -avbu --backup-dir="$conflict_dir" --remove-source-files "$local_path/" "$target_dir/" 2>/dev/null || true
-                find "$local_path" -depth -mindepth 1 -type d -empty -delete 2>/dev/null || true
+                find "$local_path" -depth -mindepth 1 -type d -not -path "*/Workspaces*" -not -path "*/.obsidian*" -empty -delete 2>/dev/null || true
             fi
         fi
 
@@ -308,6 +308,14 @@ attach() {
 
     # Update directory skeleton snapshot for offline host parity
     update_directory_skeleton
+
+    # Clean any offline notice files
+    rm -f "$USER_HOME/Projects/.STORAGE_OFFLINE_NOTICE.txt" "$USER_HOME/Documents/.STORAGE_OFFLINE_NOTICE.txt" 2>/dev/null || true
+
+    # Auto-verify and heal AI-Vault canonical symlinks
+    if [ -x "$USER_HOME/.local/bin/vault-steward" ]; then
+        su - "$USER_NAME" -c "$USER_HOME/.local/bin/vault-steward --fix" >/dev/null 2>&1 || true
+    fi
 
     log "Soul Stone successfully attached and active!"
     if command -v notify-send >/dev/null 2>&1; then
@@ -399,6 +407,22 @@ except Exception:
         ln -sfn "$ide_target" "$ide_link"
         chown -h "$USER_UID:$USER_GID" "$ide_link"
     done
+
+    # Leave explicit offline notices in skeleton directories so users/AIs know storage is unmounted
+    local notice_content="===================================================================
+⚠️ SOUL STONE ENCRYPTED STORAGE IS CURRENTLY OFFLINE / DETACHED
+===================================================================
+- The files inside this directory on the internal SSD are only an
+  empty placeholder skeleton so local apps don't crash when offline.
+- Your real source code, .git history, and documents are securely stored
+  on the Soul Stone encrypted partition (/dev/sdb2).
+- When Soul Stone mounts, your real files will be transparently overlaid
+  over this skeleton.
+- DO NOT PANIC. No files have been deleted.
+==================================================================="
+    echo "$notice_content" > "$USER_HOME/Projects/.STORAGE_OFFLINE_NOTICE.txt" 2>/dev/null || true
+    echo "$notice_content" > "$USER_HOME/Documents/.STORAGE_OFFLINE_NOTICE.txt" 2>/dev/null || true
+    chown "$USER_UID:$USER_GID" "$USER_HOME/Projects/.STORAGE_OFFLINE_NOTICE.txt" "$USER_HOME/Documents/.STORAGE_OFFLINE_NOTICE.txt" 2>/dev/null || true
 }
 
 detach() {
