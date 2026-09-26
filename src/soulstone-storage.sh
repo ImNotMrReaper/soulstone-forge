@@ -283,6 +283,27 @@ apply_flash_nodatacow() {
     fi
 }
 
+# refresh_dock_mounts: work around ubuntu-dock's removable-drive bookkeeping.
+# locations.js (Removables._onMountAdded) de-duplicates by GMount object, not by volume,
+# so when gvfs re-announces the Soul Stone volume during attach/detach the dock keeps a
+# stale icon next to the new one ("two Soul Stones"). Flipping show-mounts-only-mounted
+# makes the dock rebuild its list from Gio.VolumeMonitor (_updateVolumes), which yields
+# exactly one icon per volume. The user's original value is restored. Runs detached,
+# a few seconds after the mount table settles; a no-op without a user session bus.
+refresh_dock_mounts() {
+    local bus="/run/user/$USER_UID/bus" key="org.gnome.shell.extensions.dash-to-dock"
+    [ -S "$bus" ] || return 0
+    command -v gsettings >/dev/null 2>&1 || return 0
+    ( sleep 4
+      runuser -u "$USER_NAME" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" sh -c '
+        k="$1"; cur="$(gsettings get "$k" show-mounts-only-mounted 2>/dev/null)" || exit 0
+        case "$cur" in true) flip=false ;; false) flip=true ;; *) exit 0 ;; esac
+        gsettings set "$k" show-mounts-only-mounted "$flip"; sleep 0.5
+        gsettings set "$k" show-mounts-only-mounted "$cur"' sh "$key"
+    ) >/dev/null 2>&1 </dev/null &
+    disown 2>/dev/null || true
+}
+
 attach() {
     log "Initiating Soul Stone native overlay attachment for user '$USER_NAME'..."
     mkdir -p "$SD_MOUNT"
@@ -430,6 +451,7 @@ attach() {
     fi
 
     log "Soul Stone successfully attached and active!"
+    refresh_dock_mounts
     if command -v notify-send >/dev/null 2>&1; then
         su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "SD Card connected. Folders mounted." 2>/dev/null || true'
     fi
@@ -546,6 +568,7 @@ detach() {
     fi
     ensure_local_directories
     log "Soul Stone detached cleanly."
+    refresh_dock_mounts
     if command -v notify-send >/dev/null 2>&1; then
         su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "SD card unmounted cleanly." 2>/dev/null || true'
     fi
@@ -560,6 +583,7 @@ eject() {
     fi
     ensure_local_directories
     log "Soul Stone safely unmounted and closed."
+    refresh_dock_mounts
     if command -v notify-send >/dev/null 2>&1; then
         su - "$USER_NAME" -c 'notify-send -i media-flash-sd "Soul Stone" "Safe to remove SD card." 2>/dev/null || true'
     fi

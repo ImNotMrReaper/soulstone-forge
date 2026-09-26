@@ -71,8 +71,16 @@ link_env() {   # $1 = body to run in a subshell with the sandbox wired in
     USER_HOME="$SANDBOX/home"; SD_MOUNT="$SANDBOX/sd"; LINKED_BASE="$SD_MOUNT/Linked"
     USER_UID="$(id -u)"; USER_GID="$(id -g)"
     is_sd_healthy() { return 0; }; send_notify() { :; }; logger() { :; }
+    is_on_soulstone() { return 1; }   # sandbox home and "SD" share one filesystem
+    SELF="$SANDBOX/wrap.sh"           # batch mode re-invokes itself; point it at the sandbox
     set -e; eval "$1" ) 2>&1
 }
+cat > "$SANDBOX/wrap.sh" <<WRAP
+set +u; source "$LINK"
+USER_HOME="$SANDBOX/home"; SD_MOUNT="$SANDBOX/sd"; LINKED_BASE="\$SD_MOUNT/Linked"
+is_sd_healthy() { return 0; }; send_notify() { :; }; logger() { :; }; is_on_soulstone() { return 1; }
+set -e; cmd_\$1 "\$2"
+WRAP
 reset_link() { rm -rf "$SANDBOX/home" "$SANDBOX/sd"; mkdir -p "$SANDBOX/home" "$SANDBOX/sd"; }
 
 reset_link; mkdir -p "$SANDBOX/home/proj/sub"; echo data > "$SANDBOX/home/proj/sub/f"; echo top > "$SANDBOX/home/proj/t"
@@ -104,6 +112,11 @@ link_env 'cmd_unlink "$USER_HOME/homelink"' >/dev/null; rc=$?
 check "unlink of a symlink into \$HOME: refused, data intact" '[ $rc -ne 0 ] && [ "$(cat $SANDBOX/home/keep/f)" = k ]'
 
 reset_link; mkdir -p "$SANDBOX/home/.ssh" "$SANDBOX/home/Documents/Notes/Locked" "$SANDBOX/outside"; echo s > "$SANDBOX/home/.ssh/id"
+echo rc > "$SANDBOX/home/.bashrc"; mkdir -p "$SANDBOX/home/proj2/.git"; echo g > "$SANDBOX/home/proj2/.git/HEAD"
+for t in '$USER_HOME/.bashrc' '$USER_HOME/proj2/.git'; do
+  link_env "cmd_link \"$t\"" >/dev/null; rc=$?
+  check "link refuses hidden item '$t'" "[ $rc -ne 0 ] && [ -f \"\$SANDBOX/home/.bashrc\" ] && [ ! -L \"\$SANDBOX/home/.bashrc\" ] && [ -d \"\$SANDBOX/home/proj2/.git\" ]"
+done
 for t in '$USER_HOME' '$USER_HOME/.ssh' '$USER_HOME/Documents/Notes/Locked' "$SANDBOX/outside" '/' '/etc'; do
   link_env "cmd_link \"$t\"" >/dev/null; rc=$?
   check "link refuses '$t'" "[ $rc -ne 0 ] && [ ! -L \"\$SANDBOX/home/.ssh\" ] && [ -f \"\$SANDBOX/home/.ssh/id\" ]"
@@ -117,6 +130,40 @@ rm -f "$SANDBOX/sd/Linked/note.txt"
 link_env 'cmd_link "$USER_HOME/note.txt"' >/dev/null; link_env 'cmd_unlink "$USER_HOME/note.txt"' >/dev/null; rc=$?
 check "file link/unlink round trip" '[ $rc -eq 0 ] && [ ! -L "$SANDBOX/home/note.txt" ] && [ "$(cat $SANDBOX/home/note.txt)" = doc ] && [ ! -e "$SANDBOX/sd/Linked/note.txt" ]'
 
+echo "== soulstone-link: file-manager hardening =="
+reset_link; mkdir -p "$SANDBOX/home/a" "$SANDBOX/home/b"; echo A > "$SANDBOX/home/a/f"; echo B > "$SANDBOX/home/b/f"; echo C > "$SANDBOX/home/c.txt"
+link_env 'run_batch link "$USER_HOME/a" "$USER_HOME/b" "$USER_HOME/c.txt"' >/dev/null; rc=$?
+check "batch link: every selected item linked" '[ $rc -eq 0 ] && [ -L "$SANDBOX/home/a" ] && [ -L "$SANDBOX/home/b" ] && [ -L "$SANDBOX/home/c.txt" ] && [ "$(cat $SANDBOX/sd/Linked/b/f)" = B ]'
+link_env 'run_batch unlink "$USER_HOME/a" "$USER_HOME/b" "$USER_HOME/c.txt"' >/dev/null; rc=$?
+check "batch unlink: every item restored" '[ $rc -eq 0 ] && [ ! -L "$SANDBOX/home/a" ] && [ "$(cat $SANDBOX/home/a/f)" = A ] && [ "$(cat $SANDBOX/home/c.txt)" = C ]'
+
+reset_link; mkdir -p "$SANDBOX/home/ok"; echo ok > "$SANDBOX/home/ok/f"
+link_env 'run_batch link "$USER_HOME/ok" "$USER_HOME/.ssh"' >/dev/null; rc=$?
+check "batch with one bad item: non-zero, good item still linked" '[ $rc -ne 0 ] && [ -L "$SANDBOX/home/ok" ]'
+
+reset_link; mkdir -p "$SANDBOX/home/big"; echo x > "$SANDBOX/home/big/f"
+link_env 'df() { printf "Avail\n1024\n"; }; cmd_link "$USER_HOME/big"' >/dev/null; rc=$?
+check "link refuses when SD lacks space; folder untouched" '[ $rc -ne 0 ] && [ -d "$SANDBOX/home/big" ] && [ ! -L "$SANDBOX/home/big" ] && [ ! -e "$SANDBOX/sd/Linked/big" ]'
+
+reset_link; mkdir -p "$SANDBOX/home/real"; ln -s "$SANDBOX/home/real" "$SANDBOX/home/shortcut"
+link_env 'cmd_link "$USER_HOME/shortcut"' >/dev/null; rc=$?
+check "link refuses a plain symlink (shortcut)" '[ $rc -ne 0 ] && [ -L "$SANDBOX/home/shortcut" ] && [ -d "$SANDBOX/home/real" ]'
+
+reset_link; mkdir -p "$SANDBOX/home/ondisk"; echo d > "$SANDBOX/home/ondisk/f"
+link_env 'unset -f is_on_soulstone; source <(sed -n "/^is_on_soulstone()/,/^}/p" "$LINK"); cmd_link "$USER_HOME/ondisk"' >/dev/null; rc=$?
+check "link refuses an item already on the Soul Stone filesystem" '[ $rc -ne 0 ] && [ ! -L "$SANDBOX/home/ondisk" ] && [ "$(cat $SANDBOX/home/ondisk/f)" = d ]'
+
+reset_link; mkdir -p "$SANDBOX/home/trail"; echo t > "$SANDBOX/home/trail/f"
+link_env 'cmd_link "$USER_HOME/trail/"' >/dev/null; rc=$?
+check "trailing slash is handled (link lands on the folder, not inside it)" '[ $rc -eq 0 ] && [ -L "$SANDBOX/home/trail" ] && [ -f "$SANDBOX/sd/Linked/trail/f" ]'
+
+reset_link; evil="x'\$(touch $SANDBOX/PWNED)'y"
+out="$( ( set +u; source "$LINK"; USER_UID="$(id -u)"; SS_QUIET=; notify-send() { printf "%s|" "$@"; }; send_notify normal i "Soul Stone" "$evil" ) 2>&1 )"
+check "notification text is never run as a shell command" '[ ! -e "$SANDBOX/PWNED" ] && grep -qF "$evil" <<<"$out"'
+out="$( ( set +u; source "$LINK"; USER_UID="$(id -u)"; SS_QUIET=1; notify-send() { echo CALLED; }; send_notify normal i t m ) )"
+check "SS_QUIET suppresses per-item notifications in batches" '[ -z "$out" ]'
+check "no su -c string building left in link script" '! grep -vE "^[[:space:]]*#" "$LINK" | grep -q "su - "'
+
 echo "== static guards =="
 code() { grep -vE '^[[:space:]]*#' "$@"; }   # ignore comment lines
 check "no unchecked rsync (|| true) in storage/link scripts" '! code "$STORAGE" "$LINK" | grep -E "rsync.*\|\| *true"'
@@ -125,6 +172,22 @@ check "only guarded rm -rf remains (one-file-system, under Linked/)" '[ "$(code 
 check "no rm -rf on SD Card / ide_link in storage" '! code "$STORAGE" | grep -E "rm -rf.*(SD Card|ide_link|legacy_portal)"'
 check "engine.py no longer embeds a script copy" '! grep -q "remove-source-files" "$ROOT/src/engine.py" && grep -q "src\" / \"soulstone-storage.sh" "$ROOT/src/engine.py"'
 check "read-only status/list work unprivileged (no root-only lock)" '[ "$(id -u)" -eq 0 ] || { out="$(bash "$STORAGE" status 2>&1; bash "$STORAGE" list 2>&1)"; ! grep -q "Permission denied" <<<"$out" && grep -q "Soul Stone Status" <<<"$out"; }'
+check "dock refresh runs after attach, detach and eject" '[ "$(code "$STORAGE" | grep -c "^    refresh_dock_mounts$")" -eq 3 ]'
+check "dock refresh restores the user's original setting" 'sed -n "/^refresh_dock_mounts() {/,/^}/p" "$STORAGE" | grep -q "show-mounts-only-mounted \"\$cur\""'
+check "extension is the only Link/Unlink provider (installer drops legacy scripts)" 'grep -q "nautilus/scripts/Link to Soul Stone" "$ROOT/install-soulstone-updates.sh" && [ -f "$ROOT/src/nautilus/soulstone_extension.py" ]'
+check "extension parses" 'python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$ROOT/src/nautilus/soulstone_extension.py"'
+parity="$(python3 - "$LINK" "$ROOT/src/nautilus/soulstone_extension.py" <<'PY'
+import ast, re, sys
+sh = open(sys.argv[1]).read()
+line = re.search(r'^\s+(\.ssh\|[^)]*)\)', sh, re.M).group(1)
+tool = {x.strip('"') for x in line.split('|')}
+tree = ast.parse(open(sys.argv[2]).read())
+ext = next(ast.literal_eval(n.value) for n in tree.body
+           if isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '') == 'PROTECTED_TOP')
+print('ok' if tool == ext else f'tool={sorted(tool)} ext={sorted(ext)}')
+PY
+)"
+check "extension protected list matches the link tool ($parity)" '[ "$parity" = ok ]'
 check "storage + link parse (bash -n)" 'bash -n "$STORAGE" && bash -n "$LINK"'
 
 echo; echo "Result: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
