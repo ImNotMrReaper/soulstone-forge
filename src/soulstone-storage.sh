@@ -3,6 +3,19 @@
 # Supports Ubuntu 24.04+ (Noble Numbat)
 set -e
 
+# Concurrency lock, for mutating commands only. status/list are read-only and are
+# run by the unprivileged user (the lock file in /run is root-only).
+case "${1:-status}" in
+    status|list) ;;
+    *)
+        exec 200>/run/soulstone-storage.lock
+        flock -w 10 200 || {
+            echo "[SoulStone] Another instance is currently executing. Exiting."
+            exit 0
+        }
+        ;;
+esac
+
 # 1. Deterministic User Resolution (Always target primary desktop user, never root)
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     USER_NAME="$SUDO_USER"
@@ -62,7 +75,7 @@ load_mappings() {
             "Pictures|$USER_HOME/Pictures"
             "Music|$USER_HOME/Music"
             "Videos|$USER_HOME/Videos"
-            "Movies|$USER_HOME/Movies"
+            "Movies|$USER_HOME/Videos/Movies"
             "Projects|$USER_HOME/Projects"
             "Games|$USER_HOME/Games"
         )
@@ -88,6 +101,53 @@ is_mount_healthy() {
     return 1
 }
 
+# >>> soulstone-safe-migrate (identical copy in soulstone-storage and soulstone-link; tests enforce this) >>>
+ss_warn() { echo "[SoulStone][WARN] $*" >&2; logger -t soulstone-storage "WARN: $*" 2>/dev/null || true; }
+
+# Prints one user-data entry still under DIR (anything except directories, sockets, fifos).
+ss_leftovers() {
+    find "$1" -mindepth 1 ! -type d ! -type s ! -type p -print -quit 2>/dev/null
+}
+
+# ss_safe_migrate SRC DST STASH
+# Moves the FILES under SRC into DST without ever deleting user data:
+#   - rsync must exit 0 (failures are no longer swallowed by `|| true`)
+#   - a DST file that gets replaced is kept in STASH/replaced-on-target
+#   - a SRC file skipped because DST is newer is moved to STASH/older-local
+#   - SRC directories stay in place (offline skeleton parity); nothing is pruned
+# Returns 0 only when SRC holds no files afterwards; the caller must not overlay,
+# replace or remove SRC on a non-zero return.
+ss_safe_migrate() {
+    local src="${1%/}" dst="${2%/}" stash="$3"
+    if [ ! -d "$src" ] || [ ! -d "$dst" ] || [ -z "$stash" ]; then
+        ss_warn "safe_migrate: bad arguments (src='$src' dst='$dst')"
+        return 1
+    fi
+    mkdir -p "$stash" || return 1
+    if ! rsync -a -u -b --backup-dir="$stash/replaced-on-target" --remove-source-files "$src/" "$dst/"; then
+        ss_warn "rsync failed migrating $src -> $dst; unmoved files were left in place"
+        return 1
+    fi
+    if [ -n "$(ss_leftovers "$src")" ]; then
+        ss_warn "newer copies already exist in $dst; stashing older local files in $stash/older-local"
+        rsync -a --remove-source-files "$src/" "$stash/older-local/" || return 1
+    fi
+    [ -z "$(ss_leftovers "$src")" ]
+}
+
+# ss_valid_name NAME: single path component, no leading dot, safe charset.
+ss_valid_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9._\ -]*$ ]] && [ "$1" != "Soul Stone" ]
+}
+
+# ss_remove_empty_tree DIR: delete DIR only if it contains no user data (empty dirs only).
+ss_remove_empty_tree() {
+    [ -z "$(ss_leftovers "$1")" ] || return 1
+    find "$1" -depth -type d -empty -delete 2>/dev/null
+    [ ! -e "$1" ]
+}
+# <<< soulstone-safe-migrate <<<
+
 clean_stale_mounts() {
     log "Flushing any dead/stale mounts..."
     load_mappings
@@ -112,6 +172,32 @@ clean_stale_mounts() {
             umount -l "$rdir" 2>/dev/null || true
         fi
     done
+
+    # Clean any stale ~/Movies mount
+    if is_mounted "$USER_HOME/Movies"; then
+        umount -l "$USER_HOME/Movies" 2>/dev/null || true
+    fi
+
+    # Clean any overlays that were removed from MAPPINGS
+    for check_dir in "$USER_HOME/Archives" "$USER_HOME/Downloads" "$USER_HOME/Pictures" "$USER_HOME/Music" "$USER_HOME/Videos" "$USER_HOME/Movies" "$USER_HOME/Games"; do
+        local in_mappings=0
+        for mapping in "${MAPPINGS[@]}"; do
+            IFS="|" read -r _sub _loc <<< "$mapping"
+            if [ "$_loc" = "$check_dir" ]; then
+                in_mappings=1
+                break
+            fi
+        done
+        if [ "$in_mappings" -eq 0 ] && is_mounted "$check_dir"; then
+            log "Unmounting retired overlay: $check_dir"
+            umount -l "$check_dir" 2>/dev/null || true
+        fi
+    done
+
+    # Clean any stale udisks2 media mount
+    if is_mounted "/media/$USER_NAME/Soul Stone"; then
+        umount -l "/media/$USER_NAME/Soul Stone" 2>/dev/null || true
+    fi
 
     if is_mounted "$USER_HOME/Soul Stone"; then
         if ! is_mount_healthy "$USER_HOME/Soul Stone"; then
@@ -146,6 +232,10 @@ force_detach_all() {
         while is_mounted "$rdir"; do
             umount -l "$rdir" 2>/dev/null || break
         done
+    done
+
+    while is_mounted "/media/$USER_NAME/Soul Stone"; do
+        umount -l "/media/$USER_NAME/Soul Stone" 2>/dev/null || break
     done
 
     while is_mounted "$USER_HOME/Soul Stone"; do
@@ -249,13 +339,19 @@ attach() {
         mkdir -p "$local_path"
         chown -R "$USER_UID:$USER_GID" "$local_path"
 
-        # Reconcile any files created locally while offline
+        # Reconcile any files created locally while offline. Never overlay a
+        # folder whose files could not all be moved: the overlay would hide them.
         if [ -d "$local_path" ] && [ "$(ls -A "$local_path" 2>/dev/null)" ]; then
             if ! is_mounted "$local_path"; then
+                if ! is_mount_healthy "$SD_MOUNT"; then
+                    log "ERROR: $SD_MOUNT went away mid-attach; leaving $local_path untouched."
+                    return 1
+                fi
                 log "Reconciling offline files: $local_path -> $target_dir (Safe Sync)..."
-                mkdir -p "$conflict_dir"
-                rsync -avbu --backup-dir="$conflict_dir" --remove-source-files "$local_path/" "$target_dir/" 2>/dev/null || true
-                find "$local_path" -depth -mindepth 1 -type d -not -path "*/Workspaces*" -not -path "*/.obsidian*" -empty -delete 2>/dev/null || true
+                if ! ss_safe_migrate "$local_path" "$target_dir" "$conflict_dir"; then
+                    log "ERROR: could not move every file from $local_path to Soul Stone. Not overlaying it, so nothing is hidden. Stash: $conflict_dir"
+                    continue
+                fi
             fi
         fi
 
@@ -277,10 +373,15 @@ attach() {
             umount -l "$ide_link" 2>/dev/null || true
         fi
         if [ -d "$ide_link" ] && ! [ -L "$ide_link" ]; then
-            if [ "$(ls -A "$ide_link" 2>/dev/null)" ]; then
-                rsync -avbu --remove-source-files "$ide_link/" "$ide_target/" 2>/dev/null || true
+            mkdir -p "$conflict_dir"
+            if ! ss_safe_migrate "$ide_link" "$ide_target" "$conflict_dir"; then
+                log "ERROR: could not move every file out of $ide_link; keeping it as a real folder (nothing deleted)."
+                continue
             fi
-            rm -rf "$ide_link" 2>/dev/null || true
+            if ! ss_remove_empty_tree "$ide_link"; then
+                log "ERROR: $ide_link still holds data after migration; keeping it."
+                continue
+            fi
         fi
         ln -sfn "$ide_target" "$ide_link"
         chown -h "$USER_UID:$USER_GID" "$ide_link"
@@ -288,7 +389,18 @@ attach() {
 
     # 3. Single ~/Soul Stone home portal with custom SD card icon
     local home_portal="$USER_HOME/Soul Stone"
-    rm -rf "$USER_HOME/SD Card" 2>/dev/null || true
+    # Legacy portal: never `rm -rf` (it could be a live bind mount of the SD).
+    local legacy_portal="$USER_HOME/SD Card"
+    if [ -L "$legacy_portal" ]; then
+        rm -f "$legacy_portal"
+    elif [ -d "$legacy_portal" ]; then
+        if is_mounted "$legacy_portal"; then
+            umount "$legacy_portal" 2>/dev/null || umount -l "$legacy_portal" 2>/dev/null || true
+        fi
+        if ! is_mounted "$legacy_portal"; then
+            ss_remove_empty_tree "$legacy_portal" || log "Legacy $legacy_portal is not empty; leaving it in place."
+        fi
+    fi
     if [ -L "$home_portal" ] || [ -f "$home_portal" ]; then
         rm -f "$home_portal"
     fi
@@ -385,7 +497,7 @@ except Exception:
         mkdir -p "$USER_HOME/Pictures/Wallpapers"
         mkdir -p "$USER_HOME/Music"
         mkdir -p "$USER_HOME/Videos"
-        mkdir -p "$USER_HOME/Movies"
+        mkdir -p "$USER_HOME/Videos/Movies"
         mkdir -p "$USER_HOME/Archives"
         mkdir -p "$USER_HOME/Games/Heroic"
     fi
@@ -462,6 +574,14 @@ cmd_link() {
     load_mappings
     mkdir -p "$CONFIG_DIR"
     local clean_name="$(basename "$target_folder")"
+    if ! ss_valid_name "$clean_name"; then
+        echo "Refusing to link '$clean_name': use a plain folder name (no leading dot, no slashes or odd characters)."
+        exit 1
+    fi
+    if ! is_mount_healthy "$SD_MOUNT"; then
+        echo "Soul Stone is not mounted; refusing to link."
+        exit 1
+    fi
     local sd_target="$SD_MOUNT/$clean_name"
     local local_target="$USER_HOME/$clean_name"
 
@@ -473,7 +593,10 @@ cmd_link() {
 
     if [ "$(ls -A "$local_target" 2>/dev/null)" ] && ! is_mounted "$local_target"; then
         log "Migrating local files from $local_target -> $sd_target..."
-        rsync -avbu --remove-source-files "$local_target/" "$sd_target/" 2>/dev/null || true
+        if ! ss_safe_migrate "$local_target" "$sd_target" "$USER_HOME/.soulstone_conflicts/$(date +%Y%m%d_%H%M%S)"; then
+            log "ERROR: could not move every file to Soul Stone; not linking ~/$clean_name (nothing deleted)."
+            exit 1
+        fi
     fi
 
     if ! is_mounted "$local_target"; then
@@ -481,7 +604,7 @@ cmd_link() {
         mount --make-private "$local_target"
     fi
 
-    if ! grep -q "^${clean_name}\b" "$CONFIG_FILE" 2>/dev/null; then
+    if ! awk -F'|' -v n="$clean_name" '$1==n{f=1} END{exit !f}' "$CONFIG_FILE" 2>/dev/null; then
         echo "$clean_name" >> "$CONFIG_FILE"
         chown "$USER_UID:$USER_GID" "$CONFIG_FILE"
     fi
@@ -495,6 +618,10 @@ cmd_unlink() {
         exit 1
     fi
     local clean_name="$(basename "$target_folder")"
+    if ! ss_valid_name "$clean_name"; then
+        echo "Refusing to unlink '$clean_name': not a plain folder name."
+        exit 1
+    fi
     local local_target="$USER_HOME/$clean_name"
 
     log "Unlinking '$clean_name' from PC..."
@@ -503,7 +630,9 @@ cmd_unlink() {
     fi
 
     if [ -f "$CONFIG_FILE" ]; then
-        sed -i "/^${clean_name}\b/d" "$CONFIG_FILE"
+        # exact first-field match; the old sed regex let a name like '.' delete every line
+        awk -F'|' -v n="$clean_name" '$1!=n' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && cat "$CONFIG_FILE.tmp" > "$CONFIG_FILE"
+        rm -f "$CONFIG_FILE.tmp"
     fi
     log "Unlinked ~/$clean_name from PC! Files remain safely on Soul Stone at ~/Soul Stone/$clean_name as standalone extra storage."
 }

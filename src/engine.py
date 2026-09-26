@@ -5,6 +5,7 @@ Automates creation, LUKS2/AES-256 encryption, formatting, cloning, migration, an
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -186,210 +187,14 @@ def install_icons():
 def generate_system_files(luks_uuid, btrfs_uuid):
     log(f"Binding Encrypted Soul Stone (LUKS: {luks_uuid}, Btrfs: {btrfs_uuid})...", "INFO")
     script_path = Path("/usr/local/bin/soulstone-storage")
-    mappings_str = "\n".join([f'    "{m}|$USER_HOME/{m}"' for m in DEFAULT_MAPPINGS])
-    
-    script_content = f'''#!/usr/bin/env bash
-# Soul Stone Dynamic Seamless Modular Storage Engine (Encrypted Edition)
-set -e
-
-USER_NAME="{USER_NAME}"
-USER_HOME="/home/$USER_NAME"
-SD_MOUNT="/mnt/sdcard"
-LUKS_UUID="{luks_uuid}"
-BTRFS_UUID="{btrfs_uuid}"
-MAPPER_NAME="soulstone_crypt"
-MAPPER_DEV="/dev/mapper/$MAPPER_NAME"
-LUKS_DEV="/dev/disk/by-uuid/$LUKS_UUID"
-
-MAPPINGS=(
-{mappings_str}
-)
-
-log() {{
-    echo "[SoulStone $(date '+%Y-%m-%d %H:%M:%S')] $*" | logger -t soulstone-storage || true
-    echo "[SoulStone] $*"
-}}
-
-is_mounted() {{
-    mountpoint -q "$1" 2>/dev/null
-}}
-
-is_mount_healthy() {{
-    local target="$1"
-    if mountpoint -q "$target" 2>/dev/null; then
-        if ls -A "$target" >/dev/null 2>&1; then
-            return 0
-        fi
-    fi
-    return 1
-}}
-
-clean_stale_mounts() {{
-    log "Flushing any dead/stale mounts..."
-    for mapping in "${{MAPPINGS[@]}}"; do
-        IFS="|" read -r sd_sub local_path <<< "$mapping"
-        if is_mounted "$local_path"; then
-            if ! is_mount_healthy "$local_path"; then
-                umount -l "$local_path" 2>/dev/null || true
-            fi
-        fi
-    done
-
-    if is_mounted "$USER_HOME/SD Card"; then
-        if ! is_mount_healthy "$USER_HOME/SD Card"; then
-            umount -l "$USER_HOME/SD Card" 2>/dev/null || true
-        fi
-    fi
-
-    if is_mounted "$SD_MOUNT"; then
-        if ! is_mount_healthy "$SD_MOUNT"; then
-            umount -l "$SD_MOUNT" 2>/dev/null || true
-        fi
-    fi
-}}
-
-force_detach_all() {{
-    log "Force detaching all overlays..."
-    for mapping in "${{MAPPINGS[@]}}"; do
-        IFS="|" read -r sd_sub local_path <<< "$mapping"
-        while is_mounted "$local_path"; do
-            umount -l "$local_path" 2>/dev/null || break
-        done
-    done
-
-    while is_mounted "$USER_HOME/SD Card"; do
-        umount -l "$USER_HOME/SD Card" 2>/dev/null || break
-    done
-
-    while is_mounted "$SD_MOUNT"; do
-        umount -l "$SD_MOUNT" 2>/dev/null || break
-    done
-
-    if [ -e "$MAPPER_DEV" ]; then
-        cryptsetup luksClose "$MAPPER_NAME" 2>/dev/null || true
-    fi
-}}
-
-attach() {{
-    log "Attaching Soul Stone encrypted companion storage..."
-    mkdir -p "$SD_MOUNT"
-
-    clean_stale_mounts
-
-    # If mapper not open, attempt open or check if opened by desktop
-    if [ ! -e "$MAPPER_DEV" ]; then
-        # Check if opened under another mapper name or by UUID
-        local found_mapper
-        found_mapper=$(lsblk -rn -o NAME,TYPE,UUID | grep "crypt.*$BTRFS_UUID" | awk '{{print "/dev/mapper/" $1}}' || true)
-        if [ -n "$found_mapper" ] && [ -e "$found_mapper" ]; then
-            MAPPER_DEV="$found_mapper"
-        elif [ -b "$LUKS_DEV" ]; then
-            log "LUKS device detected. Waiting for user passphrase unlock in desktop..."
-        fi
-    fi
-
-    # Mount Btrfs filesystem once decrypted
-    if ! is_mount_healthy "$SD_MOUNT"; then
-        if [ -e "$MAPPER_DEV" ]; then
-            while is_mounted "$SD_MOUNT"; do
-                umount -l "$SD_MOUNT" 2>/dev/null || break
-            done
-            mount -t btrfs -o compress-force=zstd:3,noatime,autodefrag,space_cache=v2 "$MAPPER_DEV" "$SD_MOUNT"
-            log "Mounted $MAPPER_DEV to $SD_MOUNT"
-        else
-            log "Soul Stone decrypted volume not yet unlocked."
-            exit 0
-        fi
-    fi
-
-    for mapping in "${{MAPPINGS[@]}}"; do
-        IFS="|" read -r sd_sub local_path <<< "$mapping"
-        local sd_path="$SD_MOUNT/$sd_sub"
-
-        mkdir -p "$sd_path"
-        chown -R "$USER_NAME:$USER_NAME" "$sd_path" 2>/dev/null || true
-
-        if [ -L "$local_path" ]; then
-            rm -f "$local_path"
-            mkdir -p "$local_path"
-            chown "$USER_NAME:$USER_NAME" "$local_path"
-        elif [ ! -e "$local_path" ]; then
-            mkdir -p "$local_path"
-            chown "$USER_NAME:$USER_NAME" "$local_path"
-        fi
-
-        if ! is_mount_healthy "$local_path"; then
-            umount -l "$local_path" 2>/dev/null || true
-
-            if [ -d "$local_path" ] && [ "$(ls -A "$local_path" 2>/dev/null)" ]; then
-                log "Migrating offline files: $local_path -> $sd_path..."
-                rsync -av --remove-source-files "$local_path/" "$sd_path/" 2>/dev/null || true
-                find "$local_path" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-            fi
-
-            mount --bind "$sd_path" "$local_path"
-            mount -o remount,bind,x-gvfs-hide "$local_path"
-            log "Bind-mounted (hidden from dock): $sd_path -> $local_path"
-        fi
-    done
-
-    local home_portal="$USER_HOME/SD Card"
-    rm -f "$USER_HOME/SD_Card"
-    if [ -L "$home_portal" ]; then
-        rm -f "$home_portal"
-    fi
-    mkdir -p "$home_portal"
-    chown "$USER_NAME:$USER_NAME" "$home_portal"
-
-    if ! is_mount_healthy "$home_portal"; then
-        umount -l "$home_portal" 2>/dev/null || true
-        mount --bind "$SD_MOUNT" "$home_portal"
-        mount -o remount,bind,x-gvfs-hide "$home_portal"
-    fi
-    su - "$USER_NAME" -c 'gio set "/home/'"$USER_NAME"'/SD Card" metadata::custom-icon "file:///home/'"$USER_NAME"'/.local/share/icons/sdcard.png" 2>/dev/null || true'
-
-    log "Soul Stone encrypted companion storage attached cleanly."
-}}
-
-detach() {{
-    log "Detaching Soul Stone modular storage..."
-    force_detach_all
-    log "Soul Stone detached and encrypted."
-}}
-
-status() {{
-    echo "=== Soul Stone Status ==="
-    if is_mount_healthy "$SD_MOUNT"; then
-        echo "Root: MOUNTED & DECRYPTED on $SD_MOUNT ($(findmnt -n -o SOURCE "$SD_MOUNT"))"
-    elif [ -e "$MAPPER_DEV" ]; then
-        echo "Root: UNLOCKED (Mapper Active) but not mounted"
-    else
-        echo "Root: LOCKED / ENCRYPTED / UNMOUNTED"
-    fi
-    echo "--- Active Directory Overlays ---"
-    for mapping in "${{MAPPINGS[@]}}"; do
-        IFS="|" read -r sd_sub local_path <<< "$mapping"
-        local sd_path="$SD_MOUNT/$sd_sub"
-        if is_mount_healthy "$local_path"; then
-            echo " [ACTIVE NATIVE] $local_path -> $sd_path"
-        else
-            echo " [OFFLINE LOCAL]  $local_path (internal drive)"
-        fi
-    done
-    if is_mount_healthy "$USER_HOME/SD Card"; then
-        echo " [ACTIVE PORTAL] $USER_HOME/SD Card -> $SD_MOUNT"
-    fi
-}}
-
-case "$1" in
-    attach) attach ;;
-    detach) detach ;;
-    clean) clean_stale_mounts ;;
-    force-detach) force_detach_all ;;
-    status) status ;;
-    *) echo "Usage: $0 {{attach|detach|clean|force-detach|status}}"; exit 1 ;;
-esac
-'''
+    # Single source of truth: ship the hardened script from src/, never an embedded copy
+    # (an older embedded copy here used to overwrite the fixed script on every forge/install).
+    template = PROJECT_ROOT / "src" / "soulstone-storage.sh"
+    script_content = template.read_text()
+    for var, val in (("LUKS_UUID", luks_uuid), ("BTRFS_UUID", btrfs_uuid)):
+        script_content, n = re.subn(rf'^{var}=".*"$', f'{var}="{val}"', script_content, flags=re.M)
+        if n != 1:
+            raise RuntimeError(f"{template} must contain exactly one {var}= line (found {n})")
     script_path.write_text(script_content)
     script_path.chmod(0o755)
 

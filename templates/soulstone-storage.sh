@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# DEPRECATED - DO NOT INSTALL. Legacy template with unchecked rsync + rm -rf/find -delete (data-loss risk).
+# The maintained script is src/soulstone-storage.sh; deploy it with install-soulstone-updates.sh.
 # Soul Stone Dynamic Seamless Modular Storage Engine (Production Hardened Edition)
 # Supports Ubuntu 24.04+, Manjaro / Arch, Debian, and Fedora
 set -e
