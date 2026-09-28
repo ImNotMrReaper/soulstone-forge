@@ -19,7 +19,7 @@ esac
 # 1. Deterministic User Resolution (Always target primary desktop user, never root)
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
     USER_NAME="$SUDO_USER"
-elif [ -n "$PKEXEC_UID" ]; then
+elif [ -n "$PKEXEC_UID" ] && [ "$PKEXEC_UID" != "0" ]; then
     USER_NAME="$(id -un "$PKEXEC_UID" 2>/dev/null || echo "mr-reaper")"
 else
     USER_NAME="$(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $3}' | grep -v 'gdm\|root' | head -n1)"
@@ -32,6 +32,47 @@ USER_HOME="$(getent passwd "$USER_NAME" | cut -d: -f6)"
 
 USER_UID="$(id -u "$USER_NAME" 2>/dev/null || echo 1000)"
 USER_GID="$(id -g "$USER_NAME" 2>/dev/null || echo 1000)"
+
+# 1b. PRINCIPAL PINNING GUARD (Station Architecture Specification, section 3)
+# Every target this engine writes to is a *home*: the offline skeleton, the IDE
+# symlinks, the ~/Soul Stone portal and every overlay bind mount. Only a listed
+# principal may own one, and root never may. Without this pin a degraded
+# resolution silently retargets the whole engine at another home -- which is how
+# /root grew an empty copy of the home skeleton (deviation D17).
+# Override only for a deliberate, audited run:  SOULSTONE_PRINCIPALS="mr-reaper cortex"
+SOULSTONE_PRINCIPALS="${SOULSTONE_PRINCIPALS:-mr-reaper}"
+
+# principal_home NAME -> prints the pinned home of NAME, or fails.
+principal_home() {
+    local want="$1" p ph
+    [ -n "$want" ] || return 1
+    for p in $SOULSTONE_PRINCIPALS; do
+        [ "$p" = "$want" ] || continue
+        ph="$(getent passwd "$p" | cut -d: -f6)"
+        case "$ph" in
+            /home/*) ;;   # a principal's home lives under /home -- /root never does
+            *) return 1 ;;
+        esac
+        [ -d "$ph" ] || return 1
+        printf '%s\n' "$ph"
+        return 0
+    done
+    return 1
+}
+
+# target_is_pinned -> succeeds only when the resolved target is that exact home.
+target_is_pinned() {
+    local ph
+    [ "$USER_UID" = "0" ] && return 1
+    ph="$(principal_home "$USER_NAME")" || return 1
+    [ "$ph" = "$USER_HOME" ] || return 1
+    return 0
+}
+
+refuse_unpinned() {
+    log "REFUSING $1: resolved target '$USER_NAME' (home '$USER_HOME', uid $USER_UID) is not a listed principal's home."
+    log "  Allowed principals: $SOULSTONE_PRINCIPALS (spec section 3). Check SUDO_USER / PKEXEC_UID / loginctl."
+}
 
 SD_MOUNT="/mnt/sdcard"
 LUKS_UUID="8636c4f3-09c8-42ce-bf9b-fe273be32b3f"
@@ -486,6 +527,14 @@ with open(skeleton, 'w') as f:
 
 ensure_local_directories() {
     log "Ensuring all native companion directories and full subdirectories exist locally on computer..."
+    # D17 guard: never build a home skeleton outside a pinned principal's home.
+    # Returns 0 (not 1) on purpose: detach/eject call this after the unmount has
+    # already happened, and `set -e` must not abort the rest of a safe removal.
+    if ! target_is_pinned; then
+        refuse_unpinned "skeleton build"
+        log "  No directories were created."
+        return 0
+    fi
     local skeleton_file="$CONFIG_DIR/directory_skeleton.txt"
     if [ -f "$skeleton_file" ]; then
         python3 -c "
@@ -753,6 +802,18 @@ cmd_list() {
     echo ""
     echo "💡 Run 'soulstone link <Folder>' to bind a folder to PC, or 'soulstone unlink <Folder>' to keep it as extra storage only."
 }
+
+# Commands below write into a home. Refuse outright rather than guess a target.
+# detach/eject are deliberately NOT gated here: unmounting must always be able to
+# complete, and their skeleton call is guarded inside ensure_local_directories.
+case "${1:-status}" in
+    attach|link|bind|unlink|unbind)
+        if ! target_is_pinned; then
+            refuse_unpinned "'$1'"
+            exit 78   # EX_CONFIG
+        fi
+        ;;
+esac
 
 case "${1:-status}" in
     attach)
